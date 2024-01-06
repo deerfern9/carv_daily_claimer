@@ -125,7 +125,7 @@ def main():
     proxies = [{'http': f'http://{line.strip()}', 'https': f'http://{line.strip()}'} for line in open('proxies.txt').readlines()]
 
     privates_proxies = list(zip(privates, proxies))
-
+    random.shuffle(privates_proxies)
     for private, proxy in privates_proxies:
         try:
             bearer = get_bearer(private, proxy)
