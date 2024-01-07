@@ -1,0 +1,5 @@
+eth_account==0.9.0
+loguru==0.7.1
+random_user_agent==1.0.1
+Requests==2.31.0
+web3==6.11.1
