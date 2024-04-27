@@ -16,6 +16,6 @@ Required Python version: 3.11+
 
 2. Software setup:
    
-  Open carv_dayli.py and edit the following variables
+   Open carv_dayli.py and edit the following variables
   
-  ![image](https://github.com/deerfern9/carv_daily_claimer/assets/81830808/9ca941a5-84ff-4b4c-bab7-132f19dbc6a9)
+   ![image](https://github.com/deerfern9/carv_daily_claimer/assets/81830808/9ca941a5-84ff-4b4c-bab7-132f19dbc6a9)
