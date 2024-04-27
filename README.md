@@ -6,13 +6,13 @@ Description and requirements
 Required Python version: 3.11+
 
 1. Setting requirements:
-  ```
-  cd path/to/projroject (e.g. cd C:\Users\Administrator\Desktop\carv_dayli_claimer)
-  ```
+   ```
+   cd path/to/projroject (e.g. cd C:\Users\Administrator\Desktop\carv_dayli_claimer)
+   ```
 
-  ```
-  pip install -r requirements.txt
-  ```
+   ```
+   pip install -r requirements.txt
+   ```
 
 2. Software setup:
    
