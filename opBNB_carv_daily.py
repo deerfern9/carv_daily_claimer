@@ -2,146 +2,196 @@ import random
 import requests
 import time
 from web3 import Web3
-from base64 import b64encode
+from web3.auto import w3
 from loguru import logger
+import base64
+from datetime import datetime
 from eth_account.messages import encode_defunct
 from random_user_agent.user_agent import UserAgent
-from random_user_agent.params import SoftwareName, OperatingSystem
+from fake_useragent import UserAgent
 
-# 204 - opBNB | 324 - zkSync Era | 2020 - Ronin
-chain_id = 204
-claim_ronin_also = True                                         # claims carv per Ronin network with opBNB or zkSync Era
-retry_count = 2                                                 # retries when error happened
-delay = (30, 60)                                                # delays between wallets
+# 204 - opBNB | 324 - zkSync Era | 2020 - Ronin | 59144 - Linea
+chains_id = [324, 204, 2020, 59144]           # List of chains to do daily
+retry_count = 2                               # Retries when error happened
+tasks_delay = (10, 20)                        # Delays between daily claims of each chain (min delay, max delay)
+wallets_delay = (60, 300)                     # Delay between wallets (min delay, max delay)
+is_infinite = True                            # The software will never stop. No need to start every day
 
-opBNB_rpc = 'https://1rpc.io/opbnb'                             # https://www.1rpc.io/dashboard
-era_rpc = 'https://zksync-era.blockpi.network/v1/rpc/public'    # https://blockpi.io/
-
-
-web3 = Web3(Web3.HTTPProvider(opBNB_rpc if chain_id == 204 else era_rpc))
-
-headers = {
-    'authority': 'interface.carv.io',
-    'accept': 'application/json, text/plain, */*',
-    'content-type': 'application/json',
-    'origin': 'https://protocol.carv.io',
-    'referer': 'https://protocol.carv.io/',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'x-app-id': 'carv',
+# You can replace if with your private rpc
+rpc_links = {
+    204  : 'https://1rpc.io/opbnb',
+    2020 : None,
+    324  : 'https://zksync-era.blockpi.network/v1/rpc/public',
+    59144: 'https://linea.blockpi.network/v1/rpc/public'
 }
 
-software_names = [SoftwareName.CHROME.value]
-operating_systems = [OperatingSystem.WINDOWS.value, OperatingSystem.LINUX.value]
-user_agent_rotator = UserAgent(software_names=software_names, operating_systems=operating_systems, limit=100)
+contract_addresses = {
+    204  : '0xc32338e7f84f4c01864c1d5b2b0c0c7c697c25dc',
+    2020 : None,
+    324  : '0x5155704BB41fDe152Ad3e1aE402e8E8b9bA335D3',
+    59144: '0xC5Cb997016c9A3AC91cBe306e59B048a812C056f',
+}
+
+explorers = {
+    204  : 'https://opbnbscan.com/tx/',
+    2020 : None,
+    324  : 'https://explorer.zksync.io/tx/',
+    59144: 'https://lineascan.build/tx/'
+}
+
+web3s = {}
+for chain_id_ in chains_id:
+    web3s[chain_id_] = Web3(Web3.HTTPProvider(rpc_links[chain_id_]))
 
 
 def base64_encode(string: str):
-    return b64encode(string.encode('utf-8')).decode('utf-8')
+    return base64.b64encode(string.encode('utf-8')).decode()
 
 
 def form_data(string):
     return '0' * (64 - len(string)) + string
 
 
-def sign_signature(private_key, message):
+def new_sleep(sleep_period):
+    while sleep_period > 0:
+        if sleep_period > 5:
+            time.sleep(5)
+            sleep_period -= 5
+        else:
+            time.sleep(sleep_period)
+            sleep_period = -1
+
+        if datetime.now().strftime('%H:%M') == '02:00':
+            return 'break'
+
+
+def sign_message(private_key, message):
     message_hash = encode_defunct(text=message)
-    signed_message = web3.eth.account.sign_message(message_hash, private_key)
+    signed_message = w3.eth.account.sign_message(message_hash, private_key)
 
     return signed_message.signature.hex()
 
 
-def get_bearer(private, proxy):
-    global headers
-
-    ua = user_agent_rotator.get_random_user_agent()
-
-    headers['user-agent'] = ua
-    headers['authorization'] = ''
-
-    address = web3.eth.account.from_key(private).address
-
-    msg = (f'Hello! Please sign this message to confirm your ownership of the address. '
-           f'This action will not cost any gas fee. Here is a unique text: {int(time.time())}000')
-    signature = sign_signature(private, msg)
-
+def login(session, account):
+    message = session.get('https://interface.carv.io/protocol/wallet/get_signature_text').json()['data']['text']
+    signature = sign_message(account.key, message)
     json_data = {
-        'wallet_addr': address,
-        'text': msg,
+        'wallet_addr': account.address,
+        'text': message,
         'signature': signature,
     }
 
-    token = requests.post('https://interface.carv.io/protocol/login', headers=headers, json=json_data,
-                          proxies=proxy).json()['data']['token']
-    bearer = "bearer " + base64_encode(f'eoa:{token}')
-
-    return bearer
+    token = session.post('https://interface.carv.io/protocol/login', json=json_data).json()['data']['token']
+    return f'Bearer {base64_encode(token)}'
 
 
-def prepare_transaction_data(address, bearer, proxy, chain_id_):
-    headers['authorization'] = bearer
+def prepare_transaction_data(session, account, chain_id):
+    params = {
+        'chain_id': chain_id,
+    }
+    status = session.get('https://interface.carv.io/airdrop/check_carv_status', params=params).json()['data']['status']
+    if status == 'finished':
+        logger.success(f'{account.address} | The daily task in {chain_id} has already been completed')
+        return
 
     json_data = {
-        'chain_id': chain_id_,
+        'chain_id': chain_id,
     }
 
-    response = requests.post('https://interface.carv.io/airdrop/mint/carv_soul', headers=headers, json=json_data,
-                             proxies=proxy).json()
-    if chain_id_ == 2020:
-        logger.success(f'{address} | Ronin daily successfully claimed!')
+    response = session.post('https://interface.carv.io/airdrop/mint/carv_soul', json=json_data).json()
+    if chain_id == 2020:
+        logger.success(f'{account.address} | Ronin daily successfully claimed!')
         return None
     signature = response['data']['signature'][2:]
 
     response = response['data']['permit']
-    address_data = form_data(address[2:])
+    address_data = form_data(account.address[2:])
     amount_data = form_data(hex(response['amount'])[2:])
     ymd_data = form_data(hex(response['ymd'])[2:])
 
     return f'0xa2a9539c{address_data}{amount_data}{ymd_data}00000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000041{signature}00000000000000000000000000000000000000000000000000000000000000'
 
 
-def claim_daily(private, tx_data):
-    address = web3.eth.account.from_key(private).address
+def claim_daily(account, tx_data, chain_id):
     try:
         tx = {
-            'from': address,
-            'to': web3.to_checksum_address('0xc32338e7f84f4c01864c1d5b2b0c0c7c697c25dc' if chain_id == 204 else '0x5155704BB41fDe152Ad3e1aE402e8E8b9bA335D3'),
-            'gas': 111258 if chain_id == 204 else 780669,
-            'gasPrice': web3.eth.gas_price,
-            'nonce': web3.eth.get_transaction_count(address),
+            'from': account.address,
+            'to': Web3.to_checksum_address(contract_addresses[chain_id]),
+            'gasPrice': web3s[chain_id].eth.gas_price,
+            'nonce': web3s[chain_id].eth.get_transaction_count(account.address),
             'value': 0,
             'data': tx_data
         }
-        tx_create = web3.eth.account.sign_transaction(tx, private)
-        tx_hash = web3.eth.send_raw_transaction(tx_create.rawTransaction)
-        open('result.txt', 'a').write(f'{private};{address};{tx_hash.hex()}\n')
-        logger.success(f'{address} | Daily claim successful! Transaction hash: {tx_hash.hex()}')
-    except Exception as e:
-        logger.exception(address, e)
-        open('errors.txt', 'a').write(f'{private};{tx_data};{e}\n')
-
-
-def main():
-    privates = [line.strip() for line in open('privates.txt').readlines()]
-    proxies = [{'http': f'http://{line.strip()}', 'https': f'http://{line.strip()}'} for line in open('proxies.txt').readlines()]
-
-    privates_proxies = list(zip(privates, proxies))
-    random.shuffle(privates_proxies)
-    for private, proxy in privates_proxies:
         try:
-            bearer = get_bearer(private, proxy)
-            if claim_ronin_also and privates_proxies.count((private, proxy)) == 1 and chain_id != 2020:
-                prepare_transaction_data(web3.eth.account.from_key(private).address, bearer, proxy, 2020)
-            tx_data = prepare_transaction_data(web3.eth.account.from_key(private).address, bearer, proxy, chain_id)
-            if chain_id != 2020:
-                claim_daily(private, tx_data)
-            sleep = random.randint(*delay)
-            logger.info(f'Sleeping for {sleep} s.')
-            time.sleep(sleep)
+            tx['gas'] = web3s[chain_id].eth.estimate_gas(tx)
         except Exception as e:
-            logger.error(f'{web3.eth.account.from_key(private).address} | {e}')
-            if privates_proxies.count((private, proxy)) < retry_count:
-                privates_proxies.append((private, proxy))
+            logger.error(f'Can\'t estimate gas')
+            open('errors.txt', 'a').write(f'{account.key.hex()};{tx_data};{e}\n')
+            return
+
+        tx_create = web3s[chain_id].eth.account.sign_transaction(tx, account.key)
+        tx_hash = web3s[chain_id].eth.send_raw_transaction(tx_create.rawTransaction)
+        open('result.txt', 'a').write(f'{account.key.hex()};{account.address};{tx_hash.hex()}\n')
+        logger.success(f'{account.address} | Daily claim successful! Transaction hash: {explorers[chain_id]}{tx_hash.hex()}')
+    except Exception as e:
+        logger.exception(account.address, e)
+        open('errors.txt', 'a').write(f'{account.key.hex()};{tx_data};{e}\n')
+
+
+def main(private_, proxy_):
+    account = w3.eth.account.from_key(private_)
+
+    headers = {
+        'accept': 'application/json, text/plain, */*',
+        'accept-language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+        'authorization': '',
+        'cache-control': 'no-cache',
+        'origin': 'https://protocol.carv.io',
+        'pragma': 'no-cache',
+        'referer': 'https://protocol.carv.io/',
+        'sec-ch-ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-site',
+        'user-agent': UserAgent().chrome,
+        'x-app-id': 'carv',
+    }
+
+    session = requests.Session()
+    session.headers.update(headers)
+    session.proxies = {'http': proxy_, 'https': proxy_}
+    session.headers.update({'authorization': login(session, account)})
+    random.shuffle(chains_id)
+    for chain_id_ in chains_id:
+        try:
+            data = prepare_transaction_data(session, account, chain_id_)
+            if not data:
+                continue
+            claim_daily(account, data, chain_id_)
+        except Exception as e:
+            logger.error(f'{account.address} | {e}')
+        sleep = random.randint(*tasks_delay)
+        logger.debug(f'Sleeping before next chain {sleep} s.')
+        if new_sleep(sleep):
+            return
 
 
 if __name__ == '__main__':
-    main()
+    privates = [p.strip() for p in open('privates.txt').readlines()]
+    proxies = [p.strip() for p in open('proxies.txt').readlines()]
+    wallets = list(zip(privates, proxies))
+    while True:
+        random.shuffle(wallets)
+        for pri, pro in wallets:
+            if main(pri, pro):
+                break
+            sleep = random.randint(*wallets_delay)
+            logger.debug(f'Sleeping before next wallet {sleep} s.')
+            new_sleep(sleep)
+
+        if not is_infinite:
+            exit()
+
+        new_sleep(3600*10)
